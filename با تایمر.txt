@@ -1,0 +1,184 @@
+import requests
+import os
+import shutil
+import asyncio # اضافه کردن این خط
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+
+# اطلاعات توکن ربات و یوزرنیم کانال
+TOKEN = "7649603433:AAGFPz0GcOW2Ym0e2iHMGrELEFEEpidwtrE"
+CHANNEL_USERNAME = "@cafe_nexivo"
+
+# --- تنظیمات Apify ---
+# شناسه Actor برای Instagram Post Scraper در Apify (از URL کنسول Apify شما)
+APIFY_ACTOR_ID = "shu8hvrXbJbY3Eb9W"
+# API Token شما از Apify
+APIFY_API_TOKEN = "apify_api_wDwmXn4BMbag5GcljUgdw7r6zZSr2K39rnEo"
+
+# نقطه پایانی Apify برای اجرای Actor و دریافت نتایج به صورت همزمان
+APIFY_ENDPOINT = f"https://api.apify.com/v2/acts/{APIFY_ACTOR_ID}/run-sync-get-dataset-items"
+
+# ===========================
+# توابع مربوط به دکمه‌ها و کیبورد
+def get_main_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("عضویت در کانال 📢", url=f"https://t.me/{CHANNEL_USERNAME.lstrip('@')}")],
+        [InlineKeyboardButton("عضو شدم ✅", callback_data="check_membership")],
+        [InlineKeyboardButton("راهنما ℹ️", callback_data="help")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+# ===========================
+# توابع هندلر دستورات تلگرام
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "👋 به ربات دانلود ویدیوی اینستاگرام خوش اومدی!\n\n📌 لطفاً عضو کانال ما شو و روی 'عضو شدم ✅' کلیک کن.",
+        reply_markup=get_main_keyboard()
+    )
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "ℹ️ این ربات فقط لینک پست یا ریلز اینستاگرام رو می‌پذیره و اگر ویدیویی باشه، واست دانلودش می‌کنه.\n\n"
+        "❗️قبل از استفاده باید عضو کانال باشی."
+    )
+
+# ===========================
+# تابع کمکی برای بررسی عضویت کاربر در کانال
+async def check_membership(user_id, context):
+    try:
+        member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except Exception as e:
+        print(f"خطا در بررسی عضویت: {e}")
+        return False
+
+# ===========================
+# هندلر کلیک روی دکمه‌ها
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    if query.data == "check_membership":
+        if await check_membership(user_id, context):
+            await query.edit_message_text("✅ عضویت تایید شد! حالا لینک ویدیوی اینستاگرام رو بفرست.")
+        else:
+            await query.edit_message_text("⛔️ هنوز عضو نشدی. لطفاً عضو شو و دوباره تلاش کن.", reply_markup=get_main_keyboard())
+
+    elif query.data == "help":
+        await query.edit_message_text(
+            "ℹ️ برای استفاده از ربات:\n\n"
+            "1️⃣ عضو کانال شو\n"
+            "2️⃣ لینک پست یا ریلز اینستاگرام رو بفرست\n"
+            "3️⃣ اگه ویدیو باشه، واست می‌فرسته!\n\n"
+            "🌀 فقط پست‌های عمومی قابل دانلود هستن.",
+            reply_markup=get_main_keyboard()
+        )
+
+# ===========================
+# هندلر پیام‌ها (دریافت لینک و دانلود ویدیو)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    chat_id = update.message.chat_id
+    text = update.message.text.strip()
+
+    if not await check_membership(user_id, context):
+        await update.message.reply_text("⛔️ باید عضو کانال باشی.", reply_markup=get_main_keyboard())
+        return
+
+    if "instagram.com" not in text:
+        await update.message.reply_text("🔗 لطفاً فقط لینک پست یا ریلز اینستاگرام رو بفرست.")
+        return
+
+    # پیام "در حال پردازش" را ارسال و شناسه آن را ذخیره می‌کنیم
+    processing_message = await update.message.reply_text("⏳ در حال پردازش لینک شما...")
+    processing_message_id = processing_message.message_id
+
+    try:
+        apify_input = {
+            "directUrls": [text],
+            "resultsLimit": 1
+        }
+
+        response = requests.post(
+            url=APIFY_ENDPOINT,
+            params={"token": APIFY_API_TOKEN},
+            json=apify_input,
+            timeout=120
+        )
+        response.raise_for_status()
+
+        data = response.json()
+        video_url = None
+
+        if data and isinstance(data, list) and len(data) > 0:
+            first_result = data[0]
+            if "videoUrl" in first_result and first_result["videoUrl"]:
+                video_url = first_result["videoUrl"]
+            elif "displayUrl" in first_result and first_result["displayUrl"] and first_result.get("type") == "Video":
+                video_url = first_result["displayUrl"]
+
+        if video_url:
+            # ارسال ویدیو و ذخیره شناسه پیام آن
+            sent_video_message = await update.message.reply_video(video_url)
+            sent_video_message_id = sent_video_message.message_id
+
+            # ارسال پیام تایید و ذخیره شناسه پیام آن
+            confirmation_message = await update.message.reply_text("✅ ویدیو با موفقیت ارسال شد. این پیام و ویدیوی ارسالی پس از 30 ثانیه پاک می‌شوند.")
+            confirmation_message_id = confirmation_message.message_id
+
+            # حذف پیام "در حال پردازش"
+            await context.bot.delete_message(chat_id=chat_id, message_id=processing_message_id)
+
+            # ایجاد یک تسک غیرمسدودکننده برای حذف پیام‌ها پس از 30 ثانیه
+            asyncio.create_task(delete_messages_after_delay(
+                context,
+                chat_id,
+                [sent_video_message_id, confirmation_message_id, update.message.message_id] # پیام ویدیو، پیام تایید و پیام اصلی کاربر
+            ))
+
+        else:
+            await update.message.reply_text("❌ ویدیویی برای دانلود پیدا نشد یا Apify پاسخ معتبری نداد. شاید پست ویدیو نباشد، خصوصی باشد یا Apify قادر به استخراج آن نیست.")
+
+    except requests.exceptions.RequestException as req_err:
+        await update.message.reply_text(f"🚫 خطای ارتباط با سرویس دانلود (Apify): {req_err}")
+        print(f"⚠️ خطای درخواست HTTP از Apify: {req_err}")
+    except ValueError:
+        await update.message.reply_text("🚫 خطای دریافت پاسخ از Apify. پاسخ معتبر نیست.")
+        print(f"⚠️ خطای JSON از Apify: {response.text}")
+    except Exception as e:
+        await update.message.reply_text("🚫 خطای ناشناخته در پردازش دانلود.")
+        print(f"⚠️ خطا: {e}")
+    finally:
+        # در صورت بروز خطا قبل از ارسال پیام‌ها، پیام "در حال پردازش" را پاک می‌کنیم
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=processing_message_id)
+        except Exception:
+            pass # اگر پیام قبلاً پاک شده یا مشکلی پیش آمده بود، نادیده می‌گیریم
+
+
+# تابع جدید برای پاک کردن پیام‌ها پس از تاخیر
+async def delete_messages_after_delay(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_ids: list, delay_seconds: int = 30):
+    await asyncio.sleep(delay_seconds)
+    for msg_id in message_ids:
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        except Exception as e:
+            # ممکن است پیام قبلاً توسط کاربر پاک شده باشد یا خطایی رخ دهد
+            print(f"خطا در پاک کردن پیام {msg_id} در چت {chat_id}: {e}")
+
+# ===========================
+# تابع اصلی برای راه‌اندازی ربات
+def main():
+    application = ApplicationBuilder().token(TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(CallbackQueryHandler(button_handler))
+
+    print("ربات در حال اجراست...")
+    application.run_polling()
+
+if __name__ == "__main__":
+    main()
