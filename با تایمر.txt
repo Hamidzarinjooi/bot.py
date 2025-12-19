@@ -1,1 +1,121 @@
-ddd
+from pyrogram import Client, errors, filters
+from pyrogram.enums import ChatType
+from re import match, IGNORECASE, findall
+import asyncio
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# --- تنظیمات کلاینت ---
+API_ID = 5888972
+API_HASH = "8c6c75ac3bb436c548e56e93020cb738"
+# آیدی عددی خودت را اینجا حتما جایگزین کن
+OWNER_ID = 5750772614 
+
+app = Client("iphone_11_pro", api_id=API_ID, api_hash=API_HASH)
+scheduler = AsyncIOScheduler({'apscheduler.job_defaults.max_instances': 2})
+
+# --- دیتابیس ساده ---
+db = {
+    "admins": [OWNER_ID],
+    "ad_group_status": "off",
+    "ad_pv_status": "off",
+    "timer_group": 10,
+    "timer_pv": 10,
+    "group_banner": {"chat_id": None, "msg_id": None},
+    "pv_banner": {"chat_id": None, "msg_id": None}
+}
+
+# --- توابع کمکی ---
+def is_admin(_, __, message):
+    return message.from_user and message.from_user.id in db["admins"]
+
+admin_filter = filters.create(is_admin)
+
+# --- هندلرهای ارسال خودکار ---
+async def bannerG_handler():
+    if db["ad_group_status"] == "on" and db["group_banner"]["msg_id"]:
+        async for dialog in app.get_dialogs():
+            if dialog.chat.type in [ChatType.SUPERGROUP, ChatType.GROUP]:
+                try:
+                    await app.copy_message(
+                        chat_id=dialog.chat.id,
+                        from_chat_id=db["group_banner"]["chat_id"],
+                        message_id=db["group_banner"]["msg_id"]
+                    )
+                    await asyncio.sleep(15)
+                except Exception: continue
+
+async def bannerP_handler():
+    if db["ad_pv_status"] == "on" and db["pv_banner"]["msg_id"]:
+        async for dialog in app.get_dialogs():
+            if dialog.chat.type == ChatType.PRIVATE and dialog.chat.id not in db["admins"]:
+                try:
+                    await app.copy_message(
+                        chat_id=dialog.chat.id,
+                        from_chat_id=db["pv_banner"]["chat_id"],
+                        message_id=db["pv_banner"]["msg_id"]
+                    )
+                    await asyncio.sleep(15)
+                except Exception: continue
+
+# --- مدیریت پیام‌ها ---
+@app.on_message(admin_filter)
+async def user_message_handler(client, message):
+    text = message.text or ""
+    
+    # دستورات وضعیت
+    if match(r'^(Stats|وضعیت|Ping|ربات)$', text, IGNORECASE):
+        status_text = (
+            f"🎛 وضعیت تبچی HxD :\n\n"
+            f"◄ تبلیغ در گروه : {db['ad_group_status']}\n"
+            f"◄ تبلیغ در پیوی : {db['ad_pv_status']}\n"
+            f"◄ تایم گروه : {db['timer_group']} دقیقه\n"
+            f"◄ تایم پیوی : {db['timer_pv']} دقیقه\n"
+            f"◄ تعداد ادمین‌ها : {len(db['admins'])}"
+        )
+        await message.reply_text(status_text)
+
+    # تنظیم بنرها (Reply)
+    elif message.reply_to_message and match(r'^(Set ad group|تنظیم تبلیغ گروه)$', text, IGNORECASE):
+        db["group_banner"] = {"chat_id": message.chat.id, "msg_id": message.reply_to_message.id}
+        await message.reply_text("✅ بنر گروه ذخیره شد.")
+
+    elif message.reply_to_message and match(r'^(Set ad pv|تنظیم تبلیغ پیوی)$', text, IGNORECASE):
+        db["pv_banner"] = {"chat_id": message.chat.id, "msg_id": message.reply_to_message.id}
+        await message.reply_text("✅ بنر پیوی ذخیره شد.")
+
+    # روشن/خاموش کردن
+    elif match(r'^(Adgroup on|تبلیغ در گروه روشن)$', text, IGNORECASE):
+        db["ad_group_status"] = "on"
+        await message.reply_text("🚀 تبلیغ خودکار گروه روشن شد.")
+
+    elif match(r'^(Adgroup off|تبلیغ در گروه خاموش)$', text, IGNORECASE):
+        db["ad_group_status"] = "off"
+        await message.reply_text("🛑 تبلیغ خودکار گروه خاموش شد.")
+
+    # جوین خودکار
+    elif match(r'^(Join|پیوستن)$', text, IGNORECASE) and message.reply_to_message:
+        links = findall(r"https?://(?:t\.me|telegram\.me)/\S+", message.reply_to_message.text)
+        await message.reply_text(f"⏳ در حال جوین در {len(links)} لینک...")
+        for link in links:
+            try:
+                await client.join_chat(link)
+                await asyncio.sleep(30)
+            except: continue
+        await message.reply_text("✅ عملیات پیوستن تمام شد.")
+
+    # راهنما
+    elif match(r'^(Help|راهنما)$', text, IGNORECASE):
+        await message.reply_text("📚 لیست دستورات:\n- وضعیت\n- تنظیم تبلیغ گروه (روی بنر ریپلای کن)\n- تبلیغ در گروه روشن/خاموش\n- پیوستن (روی لینک‌ها ریپلای کن)")
+
+# --- اجرای اصلی ---
+async def start_bot():
+    await app.start()
+    # اضافه کردن تسک‌های دوره ای به اسکولر
+    scheduler.add_job(bannerG_handler, 'interval', minutes=db["timer_group"], id="group_job")
+    scheduler.add_job(bannerP_handler, 'interval', minutes=db["timer_pv"], id="pv_job")
+    scheduler.start()
+    print("--- BOT IS ONLINE ---")
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    app.run(start_bot())
